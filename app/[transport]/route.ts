@@ -1,3 +1,4 @@
+import { createUIResource } from "@mcp-ui/server";
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 import { generateRoleplayLink, TEMPLATES } from "@/lib/roleplays";
@@ -66,32 +67,41 @@ const handler = createMcpHandler(
       },
       async ({ persona, scenario, difficulty }) => {
         const base = getApiBase();
-        const html = renderRoleplayAppHtml({ persona, scenario, difficulty, apiBase: base });
         const qs = new URLSearchParams();
         if (persona) qs.set("persona", persona);
         if (scenario) qs.set("scenario", scenario);
         if (difficulty) qs.set("difficulty", difficulty);
         const hostedUrl = `${base}/app${qs.toString() ? `?${qs}` : ""}`;
+
+        const uiResource = await createUIResource({
+          uri: `ui://toughcustomer/roleplay/${Date.now()}` as `ui://${string}`,
+          content: { type: "externalUrl", iframeUrl: hostedUrl },
+          encoding: "text",
+        });
+
+        const htmlResource = await createUIResource({
+          uri: UI_RESOURCE_URI as `ui://${string}`,
+          content: {
+            type: "rawHtml",
+            htmlString: renderRoleplayAppHtml({ persona, scenario, difficulty, apiBase: base }),
+          },
+          encoding: "text",
+        });
+
         return {
           content: [
             {
-              type: "text",
+              type: "text" as const,
               text:
                 `Tough Customer roleplay configurator.\n\n` +
                 `If the UI doesn't render inline, open it in a browser:\n${hostedUrl}`,
             },
-            {
-              type: "resource",
-              resource: {
-                uri: UI_RESOURCE_URI,
-                mimeType: "text/html",
-                text: html,
-              },
-            },
+            uiResource,
+            htmlResource,
           ],
           _meta: {
-            "mcpui.dev/ui-resource": UI_RESOURCE_URI,
-            "openai/outputTemplate": UI_RESOURCE_URI,
+            "mcpui.dev/ui-resource": uiResource.resource.uri,
+            "openai/outputTemplate": uiResource.resource.uri,
           },
         };
       },
@@ -127,35 +137,27 @@ const handler = createMcpHandler(
           difficulty: input.difficulty ?? "medium",
           objections: input.objections,
         });
-        const html = renderRoleplayAppHtml({
-          link,
-          persona: link.persona,
-          scenario: link.scenario,
-          difficulty: link.difficulty,
-          apiBase: getApiBase(),
+        const base = getApiBase();
+        const hostedUrl = `${base}/app?persona=${encodeURIComponent(link.persona)}&scenario=${encodeURIComponent(link.scenario)}&difficulty=${link.difficulty}`;
+        const uiResource = await createUIResource({
+          uri: `ui://toughcustomer/roleplay/${link.id}` as `ui://${string}`,
+          content: { type: "externalUrl", iframeUrl: hostedUrl },
+          encoding: "text",
         });
-        const hostedUrl = `${getApiBase()}/app?persona=${encodeURIComponent(link.persona)}&scenario=${encodeURIComponent(link.scenario)}&difficulty=${link.difficulty}`;
         return {
           content: [
             {
-              type: "text",
+              type: "text" as const,
               text:
                 `Roleplay link: ${link.url}\n\n` +
                 `Open the configurator UI: ${hostedUrl}`,
             },
-            {
-              type: "resource",
-              resource: {
-                uri: UI_RESOURCE_URI,
-                mimeType: "text/html",
-                text: html,
-              },
-            },
+            uiResource,
           ],
           structuredContent: { ...link },
           _meta: {
-            "mcpui.dev/ui-resource": UI_RESOURCE_URI,
-            "openai/outputTemplate": UI_RESOURCE_URI,
+            "mcpui.dev/ui-resource": uiResource.resource.uri,
+            "openai/outputTemplate": uiResource.resource.uri,
           },
         };
       },
