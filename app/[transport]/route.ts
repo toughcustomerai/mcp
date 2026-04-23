@@ -2,7 +2,6 @@ import { createUIResource } from "@mcp-ui/server";
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 import { generateRoleplayLink, TEMPLATES } from "@/lib/roleplays";
-import { renderRoleplayAppHtml, UI_RESOURCE_URI } from "@/lib/ui";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -17,25 +16,6 @@ function getApiBase(): string {
 
 const handler = createMcpHandler(
   (server) => {
-    server.registerResource(
-      "toughcustomer-roleplay-app",
-      UI_RESOURCE_URI,
-      {
-        title: "Tough Customer Roleplay App",
-        description: "Interactive UI for generating Tough Customer roleplay links.",
-        mimeType: "text/html",
-      },
-      async (uri) => ({
-        contents: [
-          {
-            uri: uri.href,
-            mimeType: "text/html",
-            text: renderRoleplayAppHtml({ apiBase: getApiBase() }),
-          },
-        ],
-      }),
-    );
-
     server.registerTool(
       "toughcustomer_open_roleplay_app",
       {
@@ -79,25 +59,13 @@ const handler = createMcpHandler(
           encoding: "text",
         });
 
-        const htmlResource = await createUIResource({
-          uri: UI_RESOURCE_URI as `ui://${string}`,
-          content: {
-            type: "rawHtml",
-            htmlString: renderRoleplayAppHtml({ persona, scenario, difficulty, apiBase: base }),
-          },
-          encoding: "text",
-        });
-
         return {
           content: [
             {
               type: "text" as const,
-              text:
-                `Tough Customer roleplay configurator.\n\n` +
-                `If the UI doesn't render inline, open it in a browser:\n${hostedUrl}`,
+              text: `Open the Tough Customer roleplay configurator: ${hostedUrl}`,
             },
             uiResource,
-            htmlResource,
           ],
           _meta: {
             "mcpui.dev/ui-resource": uiResource.resource.uri,
