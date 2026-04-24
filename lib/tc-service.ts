@@ -31,11 +31,30 @@ export interface Scenario {
 }
 
 export interface CreateSessionInput {
+  userEmail: string;
   opportunityId: string;
   contactId: string;
   voiceId: string;
   scenarioId: string;
   backstory?: string;
+}
+
+export class TCUnauthorizedError extends Error {
+  constructor(email: string) {
+    super(`User not authorized: ${email}`);
+    this.name = "TCUnauthorizedError";
+  }
+}
+
+// RLS/RBAC stub. Replace with a real Supabase JWT / API check later.
+// For now we just require a syntactically valid email so every tool
+// carries identity that the backend can key off of.
+function requireUser(userEmail: string): string {
+  const email = (userEmail ?? "").trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new TCUnauthorizedError(userEmail || "<missing>");
+  }
+  return email;
 }
 
 export interface RoleplaySession {
@@ -91,19 +110,27 @@ const SCENARIOS: Scenario[] = [
   { id: "scn_champion_building", name: "Champion Building", description: "Coach an internal champion to build the business case." },
 ];
 
-export async function listOpportunities(): Promise<Opportunity[]> {
+export async function listOpportunities(userEmail: string): Promise<Opportunity[]> {
+  requireUser(userEmail);
+  // TODO: filter by userEmail via RLS / owner lookup.
   return OPPORTUNITIES;
 }
 
-export async function listScenarios(): Promise<Scenario[]> {
+export async function listScenarios(userEmail: string): Promise<Scenario[]> {
+  requireUser(userEmail);
   return SCENARIOS;
 }
 
-export async function listVoices(): Promise<Voice[]> {
+export async function listVoices(userEmail: string): Promise<Voice[]> {
+  requireUser(userEmail);
   return VOICES;
 }
 
-export async function getOpportunityContacts(opportunityId: string): Promise<Contact[]> {
+export async function getOpportunityContacts(
+  userEmail: string,
+  opportunityId: string,
+): Promise<Contact[]> {
+  requireUser(userEmail);
   if (!OPPORTUNITIES.some((o) => o.id === opportunityId)) {
     throw new TCNotFoundError("Opportunity", opportunityId);
   }
@@ -111,6 +138,7 @@ export async function getOpportunityContacts(opportunityId: string): Promise<Con
 }
 
 export async function createRoleplaySession(input: CreateSessionInput): Promise<RoleplaySession> {
+  requireUser(input.userEmail);
   const opportunity = OPPORTUNITIES.find((o) => o.id === input.opportunityId);
   if (!opportunity) throw new TCNotFoundError("Opportunity", input.opportunityId);
 
