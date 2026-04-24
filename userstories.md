@@ -26,15 +26,18 @@ Acceptance:
 
 Status: ✅
 
-### 1.2 Configure backend
-**As an** admin, **I want** a single file to swap the mock backend for real Tough Customer API calls, **so that** I don't have to touch the MCP protocol code.
+### 1.2 Configure backend (Salesforce)
+**As an** admin, **I want** to point the MCP server at Salesforce so SOQL runs as the end user with `WITH USER_MODE`, **so that** FLS + sharing rules (and admin field restrictions) are enforced by the CRM itself.
 
 Acceptance:
-- All backend I/O lives in `lib/tc-service.ts`.
-- Replacing the function bodies (not signatures) is sufficient to go live.
-- Env vars (`TC_API_URL`, `TC_API_KEY`, etc.) are read via `process.env` inside the service layer only.
+- `lib/tc-service.ts` dispatches: `USE_SALESFORCE=true` → `lib/tc-salesforce.ts`, else mock.
+- `lib/tc-salesforce.ts` calls Apex REST endpoints (see `APEX.md`) — not raw `/query` — so `WITH USER_MODE` is in force even for admin users.
+- Five Apex classes deployed: `TCOpportunitiesApi`, `TCOpportunityContactsApi`, `TCVoicesApi`, `TCScenariosApi`, `TCSessionsApi`.
+- Env vars set in Vercel: `USE_SALESFORCE`, `SF_LOGIN_URL`, `SF_API_VERSION` (optional), `MCP_PUBLIC_URL`.
+- Connected App exists in SF with PKCE required, scopes `api refresh_token openid`.
+- A non-admin rep testing against the MCP server only sees their own opportunities; an admin testing with a restricted profile sees only the fields that profile allows.
 
-Status: ✅ (service layer in place; real API still to wire)
+Status: 🟡 (scaffolding shipped; Apex classes + Connected App are manual setup in Salesforce)
 
 ### 1.3 Connect to Claude Desktop / claude.ai
 **As an** end user, **I want** to add the MCP server as a connector in Claude, **so that** I can use it from any chat.
@@ -59,49 +62,45 @@ Status: ⬜ (works, but not documented in README)
 
 ## 2. Authentication & authorization
 
-### 2.1 Today's state (INSECURE — demo only)
-**As an** admin, **I want** to understand the current trust model, **so that** I don't deploy it with real data.
+### 2.1 Trust model
+**As an** admin, **I want** to understand the current trust model, **so that** I know what's enforced and by whom.
 
 Current reality:
-- Every tool accepts a `userEmail` parameter.
-- The server trusts whatever Claude sends.
-- A user can type "my email is anyone@company.com" and spoof that identity.
-- `TCUnauthorizedError` only checks email format, not ownership.
+- In **mock mode** (default): the server returns in-memory demo data to anyone who can reach `/mcp`. No auth. Do not connect real customers.
+- In **Salesforce mode** (`USE_SALESFORCE=true`): every MCP request must carry `Authorization: Bearer <sf-token>`. The server verifies the token via `/services/oauth2/userinfo` and uses that identity — `userEmail` is NOT a tool parameter and cannot be spoofed.
+- All reads and writes hit Apex REST endpoints that wrap SOQL in `WITH USER_MODE`, so FLS + sharing + admin field restrictions are enforced by Salesforce.
 
 Acceptance:
-- This section of the doc warns anyone reading it that param-based identity is trivially spoofable.
-- No production data is connected until 2.2 ships.
+- `getSfAuth()` throws `TCUnauthorizedError` on missing/invalid tokens; tool handlers surface that to Claude.
+- No tool accepts an identity claim as an input.
+- Mock mode is clearly labeled on the landing page.
 
-Status: ✅ (documented; current code is exactly this)
+Status: ✅ (code in place; mock labelling pending — see 1.1)
 
-### 2.2 OAuth 2.1 per MCP spec
-**As an** admin, **I want** the MCP server to authenticate callers via OAuth 2.1 with PKCE, **so that** identity is proved by a verified JWT, not a self-claimed string.
-
-Acceptance:
-- Server exposes `/.well-known/oauth-protected-resource` (RFC 9728) pointing at the authorization server.
-- Unauthenticated `POST /mcp` returns `401` with a `WWW-Authenticate: Bearer` header.
-- Claude automatically opens a browser login on connect and stores the access token.
-- Every subsequent MCP request carries `Authorization: Bearer <jwt>`.
-- Middleware verifies signature, audience, expiry, and extracts `sub` + `email` claims before invoking any tool.
-- The `userEmail` tool parameter is **removed** — identity comes only from the token.
-- Dynamic Client Registration (RFC 7591) is enabled so MCP clients can self-register.
-
-Status: ⬜
-
-Implementation options (pick one):
-- **WorkOS AuthKit for MCP** — managed, MCP-native, handles all three RFCs.
-- **Clerk for MCP** — managed, one-click if already using Clerk.
-- **Supabase Auth + custom `.well-known` endpoints** — DIY, aligns naturally with Supabase RLS.
-
-### 2.3 Row-level security
-**As an** admin, **I want** the database to enforce that users only see their own opportunities and contacts, **so that** a bug in application code cannot leak another user's data.
+### 2.2 OAuth 2.1 via Salesforce Connected App
+**As an** admin, **I want** Salesforce to be the OAuth authorization server for the MCP server, **so that** identity and data authorization share one source of truth.
 
 Acceptance:
-- All Tough Customer tables have RLS policies keyed off `auth.uid()` or `auth.jwt() ->> 'email'`.
-- Policies are tested: a logged-in user of company A cannot `SELECT` any row owned by company B, even with a direct SQL connection using their JWT.
-- Service layer functions accept the verified email/sub as an argument and pass it to Supabase; no service-role key is used inside tool handlers.
+- Salesforce Connected App with PKCE required, scopes `api refresh_token openid`.
+- Server exposes `/.well-known/oauth-protected-resource` (RFC 9728) pointing at the SF login URL when `USE_SALESFORCE=true`.
+- Unauthenticated `POST /mcp` returns `401` with `WWW-Authenticate: Bearer resource_metadata="…"` pointing back to the metadata doc. (Middleware for this is TODO — currently auth errors come back as tool `isError: true` instead of protocol-level 401.)
+- Claude opens the Salesforce login flow on connect and stores the access + refresh tokens.
+- Every MCP request carries `Authorization: Bearer <sf-token>`; `getSfAuth()` verifies via `/services/oauth2/userinfo`.
+- Token → SfAuth cache TTL ≤ 60s so revocations propagate quickly.
+- Dynamic Client Registration: enabled in SF if the edition supports it (Spring '25+); otherwise document hand-provisioning.
 
-Status: ⬜
+Status: 🟡 (userinfo verification, `.well-known`, SfAuth plumbing shipped; protocol-level 401 middleware + WWW-Authenticate header pending; Connected App is manual setup)
+
+### 2.3 Row-level security via Salesforce USER_MODE
+**As an** admin, **I want** Salesforce itself to enforce that users only see records their profile allows, **so that** there is no second policy engine to get wrong.
+
+Acceptance:
+- Every SOQL query in the Apex REST layer (`TC*Api` classes in `APEX.md`) ends with `WITH USER_MODE`.
+- A test rep with a restricted profile cannot retrieve records outside their role hierarchy via the MCP server.
+- A test admin running the MCP server cannot see fields hidden by a custom FLS-restricted permission set.
+- No service-account / integration-user credential is stored in the MCP server — all SF calls use the end user's token.
+
+Status: 🟡 (MCP-side plumbing ready; Apex classes are manual deploy)
 
 ### 2.4 Workspace / domain allow-listing
 **As an** admin, **I want** to restrict the MCP server to specific email domains (e.g. `@toughcustomer.ai`), **so that** only my team can connect.

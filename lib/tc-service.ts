@@ -1,7 +1,27 @@
-// Mock Tough Customer backend. Swap these functions for real API calls later.
+// Tough Customer service layer.
 //
-// Each exported function is intentionally async so the real implementation
-// (HTTP fetch, etc.) can slot in without touching the MCP route handler.
+// Two backends:
+//   1. Mock (default): returns in-memory sample data. Good for local
+//      dev and connector smoke tests.
+//   2. Salesforce: set USE_SALESFORCE=true in the environment. All
+//      calls are then forwarded to Salesforce Apex REST endpoints
+//      that wrap SOQL with `WITH USER_MODE`, executed as the calling
+//      user (via the Bearer token on the incoming MCP request).
+//
+// Every function takes an SfAuth struct as its first argument. In
+// mock mode the struct is a synthetic one produced by getSfAuth().
+// In live mode it's the verified session of the caller.
+
+import { SfAuth, isSalesforceMode } from "./sf-auth";
+import {
+  createRoleplaySessionSF,
+  getOpportunityContactsSF,
+  listOpportunitiesSF,
+  listScenariosSF,
+  listVoicesSF,
+} from "./tc-salesforce";
+
+export { TCUnauthorizedError } from "./sf-auth";
 
 export interface Opportunity {
   id: string;
@@ -31,30 +51,11 @@ export interface Scenario {
 }
 
 export interface CreateSessionInput {
-  userEmail: string;
   opportunityId: string;
   contactId: string;
   voiceId: string;
   scenarioId: string;
   backstory?: string;
-}
-
-export class TCUnauthorizedError extends Error {
-  constructor(email: string) {
-    super(`User not authorized: ${email}`);
-    this.name = "TCUnauthorizedError";
-  }
-}
-
-// RLS/RBAC stub. Replace with a real Supabase JWT / API check later.
-// For now we just require a syntactically valid email so every tool
-// carries identity that the backend can key off of.
-function requireUser(userEmail: string): string {
-  const email = (userEmail ?? "").trim().toLowerCase();
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new TCUnauthorizedError(userEmail || "<missing>");
-  }
-  return email;
 }
 
 export interface RoleplaySession {
@@ -76,6 +77,8 @@ export class TCNotFoundError extends Error {
     this.name = "TCNotFoundError";
   }
 }
+
+// ─── Mock data ──────────────────────────────────────────────────────────
 
 const OPPORTUNITIES: Opportunity[] = [
   { id: "opp_globaltech_platform", name: "GlobalTech - Platform Modernization", stage: "Discovery", amount: 250_000 },
@@ -110,35 +113,34 @@ const SCENARIOS: Scenario[] = [
   { id: "scn_champion_building", name: "Champion Building", description: "Coach an internal champion to build the business case." },
 ];
 
-export async function listOpportunities(userEmail: string): Promise<Opportunity[]> {
-  requireUser(userEmail);
-  // TODO: filter by userEmail via RLS / owner lookup.
+// ─── Mock implementations ───────────────────────────────────────────────
+
+async function listOpportunitiesMock(_auth: SfAuth): Promise<Opportunity[]> {
   return OPPORTUNITIES;
 }
 
-export async function listScenarios(userEmail: string): Promise<Scenario[]> {
-  requireUser(userEmail);
+async function listScenariosMock(_auth: SfAuth): Promise<Scenario[]> {
   return SCENARIOS;
 }
 
-export async function listVoices(userEmail: string): Promise<Voice[]> {
-  requireUser(userEmail);
+async function listVoicesMock(_auth: SfAuth): Promise<Voice[]> {
   return VOICES;
 }
 
-export async function getOpportunityContacts(
-  userEmail: string,
+async function getOpportunityContactsMock(
+  _auth: SfAuth,
   opportunityId: string,
 ): Promise<Contact[]> {
-  requireUser(userEmail);
   if (!OPPORTUNITIES.some((o) => o.id === opportunityId)) {
     throw new TCNotFoundError("Opportunity", opportunityId);
   }
   return CONTACTS.filter((c) => c.opportunityId === opportunityId);
 }
 
-export async function createRoleplaySession(input: CreateSessionInput): Promise<RoleplaySession> {
-  requireUser(input.userEmail);
+async function createRoleplaySessionMock(
+  _auth: SfAuth,
+  input: CreateSessionInput,
+): Promise<RoleplaySession> {
   const opportunity = OPPORTUNITIES.find((o) => o.id === input.opportunityId);
   if (!opportunity) throw new TCNotFoundError("Opportunity", input.opportunityId);
 
@@ -174,4 +176,40 @@ export async function createRoleplaySession(input: CreateSessionInput): Promise<
       backstory: input.backstory,
     },
   };
+}
+
+// ─── Public dispatcher ──────────────────────────────────────────────────
+
+export async function listOpportunities(auth: SfAuth): Promise<Opportunity[]> {
+  return isSalesforceMode() && !auth.mock
+    ? listOpportunitiesSF(auth)
+    : listOpportunitiesMock(auth);
+}
+
+export async function listScenarios(auth: SfAuth): Promise<Scenario[]> {
+  return isSalesforceMode() && !auth.mock
+    ? listScenariosSF(auth)
+    : listScenariosMock(auth);
+}
+
+export async function listVoices(auth: SfAuth): Promise<Voice[]> {
+  return isSalesforceMode() && !auth.mock ? listVoicesSF(auth) : listVoicesMock(auth);
+}
+
+export async function getOpportunityContacts(
+  auth: SfAuth,
+  opportunityId: string,
+): Promise<Contact[]> {
+  return isSalesforceMode() && !auth.mock
+    ? getOpportunityContactsSF(auth, opportunityId)
+    : getOpportunityContactsMock(auth, opportunityId);
+}
+
+export async function createRoleplaySession(
+  auth: SfAuth,
+  input: CreateSessionInput,
+): Promise<RoleplaySession> {
+  return isSalesforceMode() && !auth.mock
+    ? createRoleplaySessionSF(auth, input)
+    : createRoleplaySessionMock(auth, input);
 }

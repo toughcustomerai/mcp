@@ -9,6 +9,7 @@ import {
   TCNotFoundError,
   TCUnauthorizedError,
 } from "@/lib/tc-service";
+import { getSfAuth } from "@/lib/sf-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -20,25 +21,12 @@ function handleError(err: unknown): string {
   return `Error: ${String(err)}`;
 }
 
-// Shared param: every tool requires the calling user's email so the
-// backend can enforce row-level security / role-based access control.
-const userEmailSchema = z
-  .string()
-  .email()
-  .describe(
-    "The email address of the CURRENT USER making the request. Used for RLS/RBAC. " +
-      "Ask the user for their email at the start of the session if you don't already know it, " +
-      "then pass the same value to every tool call.",
-  );
-
 const handler = createMcpHandler(
   (server) => {
     // ─── Resources ──────────────────────────────────────────────────────────
-    // Resources are kept for MCP clients that render them. They use a
-    // placeholder email — Claude Desktop doesn't auto-read resources,
-    // so the tools below are the primary path.
-
-    const RESOURCE_USER = "resource-browser@toughcustomer.ai";
+    //
+    // Resources are kept registered for MCP clients that render them
+    // (MCP Inspector, future Claude UI). They still go through auth.
 
     server.registerResource(
       "opportunities",
@@ -49,7 +37,8 @@ const handler = createMcpHandler(
         mimeType: "application/json",
       },
       async (uri) => {
-        const opportunities = await listOpportunities(RESOURCE_USER);
+        const auth = await getSfAuth();
+        const opportunities = await listOpportunities(auth);
         return {
           contents: [
             {
@@ -71,7 +60,8 @@ const handler = createMcpHandler(
         mimeType: "application/json",
       },
       async (uri) => {
-        const scenarios = await listScenarios(RESOURCE_USER);
+        const auth = await getSfAuth();
+        const scenarios = await listScenarios(auth);
         return {
           contents: [
             {
@@ -89,11 +79,12 @@ const handler = createMcpHandler(
       "toughcustomer://voices",
       {
         title: "Voices",
-        description: "Available AI buyer voices grouped by gender.",
+        description: "Available AI buyer voices.",
         mimeType: "application/json",
       },
       async (uri) => {
-        const voices = await listVoices(RESOURCE_USER);
+        const auth = await getSfAuth();
+        const voices = await listVoices(auth);
         return {
           contents: [
             {
@@ -107,17 +98,20 @@ const handler = createMcpHandler(
     );
 
     // ─── Tools ──────────────────────────────────────────────────────────────
+    //
+    // Identity comes from the Bearer token on the incoming request,
+    // NOT from a tool argument. getSfAuth() verifies the token with
+    // Salesforce and throws TCUnauthorizedError if it's missing or
+    // invalid — that error surfaces to Claude as `isError: true`.
 
     server.registerTool(
       "list_opportunities",
       {
         title: "List Opportunities",
         description:
-          "List all active sales opportunities the user can roleplay against. " +
-          "Call this first to let the user pick a deal. Returns id, name, stage, and amount for each.",
-        inputSchema: {
-          userEmail: userEmailSchema,
-        },
+          "List all active sales opportunities the CURRENT USER has access to in Salesforce. " +
+          "Call this first to let the user pick a deal. Results are scoped by Salesforce sharing rules + FLS.",
+        inputSchema: {},
         annotations: {
           readOnlyHint: true,
           destructiveHint: false,
@@ -125,9 +119,10 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async ({ userEmail }) => {
+      async () => {
         try {
-          const opportunities = await listOpportunities(userEmail);
+          const auth = await getSfAuth();
+          const opportunities = await listOpportunities(auth);
           return {
             content: [{ type: "text" as const, text: JSON.stringify(opportunities, null, 2) }],
             structuredContent: { opportunities: opportunities.map((o) => ({ ...o })) },
@@ -142,11 +137,8 @@ const handler = createMcpHandler(
       "list_voices",
       {
         title: "List Voices",
-        description:
-          "List all available AI buyer voices. Call this when the user needs to pick a voice for the roleplay.",
-        inputSchema: {
-          userEmail: userEmailSchema,
-        },
+        description: "List all available AI buyer voices.",
+        inputSchema: {},
         annotations: {
           readOnlyHint: true,
           destructiveHint: false,
@@ -154,9 +146,10 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async ({ userEmail }) => {
+      async () => {
         try {
-          const voices = await listVoices(userEmail);
+          const auth = await getSfAuth();
+          const voices = await listVoices(auth);
           return {
             content: [{ type: "text" as const, text: JSON.stringify(voices, null, 2) }],
             structuredContent: { voices: voices.map((v) => ({ ...v })) },
@@ -171,11 +164,8 @@ const handler = createMcpHandler(
       "list_scenarios",
       {
         title: "List Scenarios",
-        description:
-          "List all available roleplay scenarios. Call this when the user needs to pick a scenario.",
-        inputSchema: {
-          userEmail: userEmailSchema,
-        },
+        description: "List all available roleplay scenarios.",
+        inputSchema: {},
         annotations: {
           readOnlyHint: true,
           destructiveHint: false,
@@ -183,9 +173,10 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async ({ userEmail }) => {
+      async () => {
         try {
-          const scenarios = await listScenarios(userEmail);
+          const auth = await getSfAuth();
+          const scenarios = await listScenarios(auth);
           return {
             content: [{ type: "text" as const, text: JSON.stringify(scenarios, null, 2) }],
             structuredContent: { scenarios: scenarios.map((s) => ({ ...s })) },
@@ -202,13 +193,14 @@ const handler = createMcpHandler(
         title: "Get Opportunity Contacts",
         description:
           "Fetch the list of contacts (buying committee members) attached to a specific opportunity. " +
-          "Call this after the user selects an opportunity from list_opportunities.",
+          "Only contacts visible to the current user under Salesforce sharing rules are returned.",
         inputSchema: {
-          userEmail: userEmailSchema,
           opportunityId: z
             .string()
             .min(1)
-            .describe("The ID of the selected opportunity (e.g. opp_globaltech_platform)."),
+            .describe(
+              "The Salesforce Opportunity Id (15- or 18-char) from list_opportunities. Never invented.",
+            ),
         },
         annotations: {
           readOnlyHint: true,
@@ -217,9 +209,10 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async ({ userEmail, opportunityId }) => {
+      async ({ opportunityId }) => {
         try {
-          const contacts = await getOpportunityContacts(userEmail, opportunityId);
+          const auth = await getSfAuth();
+          const contacts = await getOpportunityContacts(auth, opportunityId);
           if (contacts.length === 0) {
             return {
               content: [
@@ -232,12 +225,7 @@ const handler = createMcpHandler(
             };
           }
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify(contacts, null, 2),
-              },
-            ],
+            content: [{ type: "text" as const, text: JSON.stringify(contacts, null, 2) }],
             structuredContent: { opportunityId, contacts: [...contacts] },
           };
         } catch (err) {
@@ -255,9 +243,9 @@ const handler = createMcpHandler(
         title: "Create Roleplay Session",
         description:
           "Initialize a Tough Customer roleplay session. Call this only after the user has chosen " +
-          "an opportunity, contact, voice, and scenario. Returns the session URL and compiled deal context.",
+          "an opportunity, contact, voice, and scenario. Returns the session URL and compiled deal context. " +
+          "Session is created on behalf of the current user.",
         inputSchema: {
-          userEmail: userEmailSchema,
           opportunityId: z.string().min(1).describe("Selected opportunity ID."),
           contactId: z.string().min(1).describe("Selected contact ID (must belong to the opportunity)."),
           voiceId: z.string().min(1).describe("Selected voice ID."),
@@ -277,7 +265,8 @@ const handler = createMcpHandler(
       },
       async (input) => {
         try {
-          const session = await createRoleplaySession(input);
+          const auth = await getSfAuth();
+          const session = await createRoleplaySession(auth, input);
           const summary =
             `Session created successfully!\n\n` +
             `URL: ${session.url}\n\n` +
@@ -341,16 +330,16 @@ const handler = createMcpHandler(
                 text:
                   `You are the Tough Customer roleplay coordinator. Help the user configure and start a sales roleplay session.\n\n` +
                   focusLine +
-                  `FIRST: ask the user for their work email address. Every tool call requires a \`userEmail\` parameter for RLS/RBAC — reuse the same email for every call in this session. Do NOT guess or fabricate an email.\n\n` +
-                  `Then follow this flow exactly — do not skip steps:\n\n` +
-                  `1. Call the \`list_opportunities\` tool (passing userEmail) and present the list. Ask the user which deal they want to practice.\n` +
-                  `2. Once they pick one, call \`get_opportunity_contacts\` with userEmail + opportunityId. Present the contacts and ask who they want to roleplay against.\n` +
-                  `3. Call \`list_voices\` and \`list_scenarios\` (both with userEmail). Let the user pick one of each (suggest a sensible default based on the deal).\n` +
+                  `Identity: the MCP server authenticates the user via Salesforce OAuth. You never need to ask for an email — every tool call runs as the signed-in Salesforce user, and data is scoped by Salesforce sharing rules + FLS.\n\n` +
+                  `Follow this flow exactly — do not skip steps:\n\n` +
+                  `1. Call \`list_opportunities\` and present the list. Ask the user which deal they want to practice.\n` +
+                  `2. Once they pick one, call \`get_opportunity_contacts\` with that opportunityId. Present the contacts and ask who they want to roleplay against.\n` +
+                  `3. Call \`list_voices\` and \`list_scenarios\`. Let the user pick one of each (suggest a sensible default based on the deal stage).\n` +
                   `4. Ask if they want to add an optional backstory / extra context.\n` +
-                  `5. Call \`create_roleplay_session\` with userEmail + all selected IDs. Share the resulting session URL and summarise the compiled deal context.\n\n` +
+                  `5. Call \`create_roleplay_session\` with all selected IDs. Share the resulting session URL and give a short pre-call coaching summary.\n\n` +
                   `Rules:\n` +
-                  `- Always show human-readable names, not IDs, when talking to the user. Keep IDs internal.\n` +
-                  `- If a tool returns an error, surface it plainly and ask the user to pick again.\n` +
+                  `- Always show human-readable names, not IDs.\n` +
+                  `- If a tool returns an authorization error, tell the user their Salesforce session may have expired and to reconnect the connector.\n` +
                   `- Don't invent opportunities, contacts, voices, or scenarios — only use what the tools return.`,
               },
             },
