@@ -111,12 +111,12 @@ export async function loadIdentityLink(
   if (error) throw error;
   if (!data) return null;
 
-  // supabase-js returns bytea as a string with a `\x` hex prefix in some
-  // configurations; normalize to Buffer.
-  const raw =
-    typeof data.refresh_token_enc === "string"
-      ? Buffer.from((data.refresh_token_enc as string).replace(/^\\x/, ""), "hex")
-      : Buffer.from(data.refresh_token_enc as Uint8Array);
+  // supabase-js sends bytea writes as JSON-serialized Buffers (toJSON()),
+  // which round-trips back as the literal string `{"type":"Buffer","data":[...]}`
+  // when read. We now write bytea using PostgreSQL hex format `\x<hex>` to
+  // avoid that. Handle both formats on read for backward compatibility with
+  // any rows written by the buggy encoder.
+  const raw = decodeBytea(data.refresh_token_enc);
 
   const refreshTokenPlaintext = decryptRefreshToken({
     ciphertext: raw,
@@ -158,7 +158,11 @@ export async function saveIdentityLink(
       external_user_id: input.externalUserId,
       external_org_id: input.externalOrgId,
       external_email: input.externalEmail,
-      refresh_token_enc: ciphertext,
+      // bytea is sent as PostgreSQL hex format `\x<hex>`. Passing the Buffer
+      // directly causes supabase-js to JSON-serialize it via toJSON() into a
+      // `{"type":"Buffer","data":[...]}` string — which gets stored as the
+      // bytes of that literal JSON. Hex-encode explicitly to avoid that.
+      refresh_token_enc: `\\x${ciphertext.toString("hex")}`,
       refresh_token_kid: kid,
       instance_url: input.instanceUrl,
       revoked_at: null,
@@ -166,6 +170,35 @@ export async function saveIdentityLink(
     { onConflict: "supabase_user_id" },
   );
   if (error) throw error;
+}
+
+// ─── bytea decoder ────────────────────────────────────────────────────────
+//
+// PostgREST returns bytea as one of:
+//   1. `\x<hex>`             — preferred, written by saveIdentityLink above
+//   2. `{"type":"Buffer","data":[...]}` — legacy from when supabase-js
+//      JSON-serialized our Buffer on insert
+//   3. raw Uint8Array         — some client configurations
+function decodeBytea(value: unknown): Buffer {
+  if (typeof value === "string") {
+    if (value.startsWith("\\x")) {
+      return Buffer.from(value.slice(2), "hex");
+    }
+    // Legacy JSON-stringified Buffer payload
+    if (value.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(value) as { type?: string; data?: number[] };
+        if (parsed.type === "Buffer" && Array.isArray(parsed.data)) {
+          return Buffer.from(parsed.data);
+        }
+      } catch {
+        // fall through
+      }
+    }
+    // Last resort: treat as base64
+    return Buffer.from(value, "base64");
+  }
+  return Buffer.from(value as Uint8Array);
 }
 
 /**
