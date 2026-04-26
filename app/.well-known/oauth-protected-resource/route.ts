@@ -7,6 +7,12 @@
 // Authorization Server: Supabase Auth at AUTH_BASE_URL (default
 // https://auth.toughcustomer.ai). Supabase issues the tokens Claude carries.
 // Salesforce is a downstream backend, not the AS — see userstories.md §2.1.
+//
+// CORS: browser-hosted MCP clients (claude.ai, chatgpt.com) need to fetch
+// this cross-origin during OAuth discovery. Returns CORS headers on every
+// response, including OPTIONS preflight.
+
+import { corsHeaders, preflightResponse } from "@/lib/cors";
 
 export const runtime = "nodejs";
 
@@ -22,7 +28,7 @@ function authBaseUrl(): string {
   return process.env.AUTH_BASE_URL ?? "https://auth.toughcustomer.ai";
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   // Supabase publishes its RFC 8414 AS-metadata document at a non-canonical
   // path: `/.well-known/oauth-authorization-server/auth/v1` (not the RFC 8414
   // canonical `/.well-known/oauth-authorization-server`). MCP clients that
@@ -30,17 +36,24 @@ export async function GET() {
   // metadata URL here, MCP clients that read this RFC 9728 doc can fetch it
   // directly without guessing.
   // OIDC discovery, by contrast, lives at the conventional path.
-  return Response.json({
-    resource: `${baseUrl()}/mcp`,
-    authorization_servers: [authBaseUrl()],
-    authorization_server_metadata: `${authBaseUrl()}/.well-known/oauth-authorization-server/auth/v1`,
-    openid_configuration: `${authBaseUrl()}/auth/v1/.well-known/openid-configuration`,
-    bearer_methods_supported: ["header"],
-    resource_documentation: `${baseUrl()}/`,
-    // Supabase OAuth Server (beta) supports only the standard OIDC scopes:
-    // openid, profile, email, phone. Custom scopes (e.g. roleplay:create)
-    // aren't yet supported by the AS. We enforce per-tool authorization in
-    // our handlers based on the authenticated user's identity instead.
-    scopes_supported: ["openid", "profile", "email"],
-  });
+  return Response.json(
+    {
+      resource: `${baseUrl()}/mcp`,
+      authorization_servers: [authBaseUrl()],
+      authorization_server_metadata: `${authBaseUrl()}/.well-known/oauth-authorization-server/auth/v1`,
+      openid_configuration: `${authBaseUrl()}/auth/v1/.well-known/openid-configuration`,
+      bearer_methods_supported: ["header"],
+      resource_documentation: `${baseUrl()}/`,
+      // Supabase OAuth Server (beta) supports only the standard OIDC scopes:
+      // openid, profile, email, phone. Custom scopes (e.g. roleplay:create)
+      // aren't yet supported by the AS. We enforce per-tool authorization in
+      // our handlers based on the authenticated user's identity instead.
+      scopes_supported: ["openid", "profile", "email"],
+    },
+    { headers: corsHeaders(req) },
+  );
+}
+
+export async function OPTIONS(req: Request) {
+  return preflightResponse(req);
 }

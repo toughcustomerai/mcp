@@ -11,6 +11,7 @@ import {
 } from "@/lib/tc-service";
 import { getCallerIdentity, getSfAuth, isMockMode, type SfAuth } from "@/lib/sf-auth";
 import { auditToolCall } from "@/lib/audit";
+import { preflightResponse, withCors } from "@/lib/cors";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -505,13 +506,20 @@ function withAuthGate(
   inner: (req: Request) => Promise<Response> | Response,
 ): (req: Request) => Promise<Response> {
   return async (req: Request) => {
+    // CORS preflight short-circuit. Browser-hosted MCP clients (claude.ai,
+    // chatgpt.com) preflight before sending the real request; without CORS
+    // headers on the preflight, the browser drops the response and the
+    // OAuth handshake never starts.
+    if (req.method === "OPTIONS") return preflightResponse(req);
+
     if (!isMockMode()) {
       const authz = req.headers.get("authorization") ?? req.headers.get("Authorization");
       if (!authz || !/^Bearer\s+.+/i.test(authz)) {
-        return unauthenticatedResponse();
+        return withCors(unauthenticatedResponse(), req);
       }
     }
-    return inner(req);
+    const inner_res = await inner(req);
+    return withCors(inner_res, req);
   };
 }
 
@@ -521,4 +529,5 @@ export {
   guardedHandler as GET,
   guardedHandler as POST,
   guardedHandler as DELETE,
+  guardedHandler as OPTIONS,
 };
