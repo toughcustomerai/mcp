@@ -1,18 +1,20 @@
 // Tough Customer service layer.
 //
 // Two backends:
-//   1. Mock (default): returns in-memory sample data. Good for local
-//      dev and connector smoke tests.
-//   2. Salesforce: set USE_SALESFORCE=true in the environment. All
-//      calls are then forwarded to Salesforce Apex REST endpoints
-//      that wrap SOQL with `WITH USER_MODE`, executed as the calling
-//      user (via the Bearer token on the incoming MCP request).
+//   1. Mock (TC_MODE=mock): returns in-memory sample data. Good for local
+//      dev and connector smoke tests. getSfAuth() returns a synthetic auth
+//      with `mock: true`.
+//   2. Salesforce (default): the caller's Supabase identity is resolved,
+//      their stored SF refresh token is exchanged for a fresh access token,
+//      and Salesforce REST GraphQL API is called as that SF user. GraphQL
+//      enforces FLS + sharing for all profiles (including admins) — same
+//      guarantee `WITH USER_MODE` gives in Apex, without an Apex deploy.
 //
-// Every function takes an SfAuth struct as its first argument. In
-// mock mode the struct is a synthetic one produced by getSfAuth().
-// In live mode it's the verified session of the caller.
+// Every function takes an SfAuth as its first argument. We dispatch on
+// `auth.mock` alone — the caller's authentication path is what determines
+// which backend runs.
 
-import { SfAuth, isSalesforceMode } from "./sf-auth";
+import { SfAuth } from "./sf-auth";
 import {
   createRoleplaySessionSF,
   getOpportunityContactsSF,
@@ -181,35 +183,31 @@ async function createRoleplaySessionMock(
 // ─── Public dispatcher ──────────────────────────────────────────────────
 
 export async function listOpportunities(auth: SfAuth): Promise<Opportunity[]> {
-  return isSalesforceMode() && !auth.mock
-    ? listOpportunitiesSF(auth)
-    : listOpportunitiesMock(auth);
+  return auth.mock ? listOpportunitiesMock(auth) : listOpportunitiesSF(auth);
 }
 
 export async function listScenarios(auth: SfAuth): Promise<Scenario[]> {
-  return isSalesforceMode() && !auth.mock
-    ? listScenariosSF(auth)
-    : listScenariosMock(auth);
+  return auth.mock ? listScenariosMock(auth) : listScenariosSF(auth);
 }
 
 export async function listVoices(auth: SfAuth): Promise<Voice[]> {
-  return isSalesforceMode() && !auth.mock ? listVoicesSF(auth) : listVoicesMock(auth);
+  return auth.mock ? listVoicesMock(auth) : listVoicesSF(auth);
 }
 
 export async function getOpportunityContacts(
   auth: SfAuth,
   opportunityId: string,
 ): Promise<Contact[]> {
-  return isSalesforceMode() && !auth.mock
-    ? getOpportunityContactsSF(auth, opportunityId)
-    : getOpportunityContactsMock(auth, opportunityId);
+  return auth.mock
+    ? getOpportunityContactsMock(auth, opportunityId)
+    : getOpportunityContactsSF(auth, opportunityId);
 }
 
 export async function createRoleplaySession(
   auth: SfAuth,
   input: CreateSessionInput,
 ): Promise<RoleplaySession> {
-  return isSalesforceMode() && !auth.mock
-    ? createRoleplaySessionSF(auth, input)
-    : createRoleplaySessionMock(auth, input);
+  return auth.mock
+    ? createRoleplaySessionMock(auth, input)
+    : createRoleplaySessionSF(auth, input);
 }

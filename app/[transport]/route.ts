@@ -9,7 +9,8 @@ import {
   TCNotFoundError,
   TCUnauthorizedError,
 } from "@/lib/tc-service";
-import { getSfAuth } from "@/lib/sf-auth";
+import { getCallerIdentity, getSfAuth, isMockMode, type SfAuth } from "@/lib/sf-auth";
+import { auditToolCall } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -19,6 +20,63 @@ function handleError(err: unknown): string {
   if (err instanceof TCNotFoundError) return `Error: ${err.message}`;
   if (err instanceof Error) return `Error: ${err.message}`;
   return `Error: ${String(err)}`;
+}
+
+interface ToolResult {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: true;
+  // mcp-handler expects an open-ended return shape with a string index sig.
+  [key: string]: unknown;
+}
+
+/**
+ * Common wrapper for every tool handler. Resolves identity (so audit has a
+ * user even on auth failures from getSfAuth), runs the tool body, and
+ * writes one mcp_audit_log row per call (success or failure).
+ */
+async function runMcpTool(
+  toolName: string,
+  inputsSummary: Record<string, unknown>,
+  body: (auth: SfAuth) => Promise<ToolResult>,
+): Promise<ToolResult> {
+  const start = Date.now();
+  let userId: string | null = null;
+  let email: string | null = null;
+  try {
+    if (!isMockMode()) {
+      const id = await getCallerIdentity();
+      userId = id.supabaseUserId;
+      email = id.email;
+    }
+    const auth = await getSfAuth();
+    const out = await body(auth);
+    auditToolCall({
+      userId,
+      email,
+      tool: toolName,
+      success: true,
+      latencyMs: Date.now() - start,
+      inputsSummary,
+    });
+    return out;
+  } catch (err) {
+    const e = err as Error;
+    auditToolCall({
+      userId,
+      email,
+      tool: toolName,
+      success: false,
+      latencyMs: Date.now() - start,
+      errorKind: e?.name,
+      errorMessage: e?.message,
+      inputsSummary,
+    });
+    return {
+      isError: true,
+      content: [{ type: "text" as const, text: handleError(err) }],
+    };
+  }
 }
 
 const handler = createMcpHandler(
@@ -119,18 +177,18 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async () => {
-        try {
-          const auth = await getSfAuth();
+      async () =>
+        runMcpTool("list_opportunities", {}, async (auth) => {
           const opportunities = await listOpportunities(auth);
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(opportunities, null, 2) }],
-            structuredContent: { opportunities: opportunities.map((o) => ({ ...o })) },
+            content: [
+              { type: "text" as const, text: JSON.stringify(opportunities, null, 2) },
+            ],
+            structuredContent: {
+              opportunities: opportunities.map((o) => ({ ...o })),
+            },
           };
-        } catch (err) {
-          return { isError: true, content: [{ type: "text" as const, text: handleError(err) }] };
-        }
-      },
+        }),
     );
 
     server.registerTool(
@@ -146,18 +204,16 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async () => {
-        try {
-          const auth = await getSfAuth();
+      async () =>
+        runMcpTool("list_voices", {}, async (auth) => {
           const voices = await listVoices(auth);
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(voices, null, 2) }],
+            content: [
+              { type: "text" as const, text: JSON.stringify(voices, null, 2) },
+            ],
             structuredContent: { voices: voices.map((v) => ({ ...v })) },
           };
-        } catch (err) {
-          return { isError: true, content: [{ type: "text" as const, text: handleError(err) }] };
-        }
-      },
+        }),
     );
 
     server.registerTool(
@@ -173,18 +229,16 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async () => {
-        try {
-          const auth = await getSfAuth();
+      async () =>
+        runMcpTool("list_scenarios", {}, async (auth) => {
           const scenarios = await listScenarios(auth);
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(scenarios, null, 2) }],
+            content: [
+              { type: "text" as const, text: JSON.stringify(scenarios, null, 2) },
+            ],
             structuredContent: { scenarios: scenarios.map((s) => ({ ...s })) },
           };
-        } catch (err) {
-          return { isError: true, content: [{ type: "text" as const, text: handleError(err) }] };
-        }
-      },
+        }),
     );
 
     server.registerTool(
@@ -209,9 +263,8 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async ({ opportunityId }) => {
-        try {
-          const auth = await getSfAuth();
+      async ({ opportunityId }) =>
+        runMcpTool("get_opportunity_contacts", { opportunityId }, async (auth) => {
           const contacts = await getOpportunityContacts(auth, opportunityId);
           if (contacts.length === 0) {
             return {
@@ -225,16 +278,12 @@ const handler = createMcpHandler(
             };
           }
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(contacts, null, 2) }],
+            content: [
+              { type: "text" as const, text: JSON.stringify(contacts, null, 2) },
+            ],
             structuredContent: { opportunityId, contacts: [...contacts] },
           };
-        } catch (err) {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: handleError(err) }],
-          };
-        }
-      },
+        }),
     );
 
     server.registerTool(
@@ -263,43 +312,48 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async (input) => {
-        try {
-          const auth = await getSfAuth();
-          const session = await createRoleplaySession(auth, input);
-          const summary =
-            `Session created successfully!\n\n` +
-            `URL: ${session.url}\n\n` +
-            `Deal context:\n` +
-            `- Opportunity: ${session.dealContext.opportunity.name} (${session.dealContext.opportunity.stage}, $${session.dealContext.opportunity.amount.toLocaleString()})\n` +
-            `- Contact: ${session.dealContext.contact.name}, ${session.dealContext.contact.title}\n` +
-            `- Voice: ${session.dealContext.voice.name} (${session.dealContext.voice.gender}) — ${session.dealContext.voice.description}\n` +
-            `- Scenario: ${session.dealContext.scenario.name}` +
-            (session.dealContext.backstory ? `\n- Backstory: ${session.dealContext.backstory}` : "");
-          return {
-            content: [{ type: "text" as const, text: summary }],
-            structuredContent: {
-              id: session.id,
-              url: session.url,
-              createdAt: session.createdAt,
-              dealContext: {
-                opportunity: { ...session.dealContext.opportunity },
-                contact: { ...session.dealContext.contact },
-                voice: { ...session.dealContext.voice },
-                scenario: { ...session.dealContext.scenario },
-                ...(session.dealContext.backstory
-                  ? { backstory: session.dealContext.backstory }
-                  : {}),
+      async (input) =>
+        runMcpTool(
+          "create_roleplay_session",
+          {
+            opportunityId: input.opportunityId,
+            contactId: input.contactId,
+            voiceId: input.voiceId,
+            scenarioId: input.scenarioId,
+            // backstory length only — never log content; redactor would strip
+            // anyway but the audit table doesn't need free text
+            backstoryLength: input.backstory?.length ?? 0,
+          },
+          async (auth) => {
+            const session = await createRoleplaySession(auth, input);
+            const summary =
+              `Session created successfully!\n\n` +
+              `URL: ${session.url}\n\n` +
+              `Deal context:\n` +
+              `- Opportunity: ${session.dealContext.opportunity.name} (${session.dealContext.opportunity.stage}, $${session.dealContext.opportunity.amount.toLocaleString()})\n` +
+              `- Contact: ${session.dealContext.contact.name}, ${session.dealContext.contact.title}\n` +
+              `- Voice: ${session.dealContext.voice.name} (${session.dealContext.voice.gender}) — ${session.dealContext.voice.description}\n` +
+              `- Scenario: ${session.dealContext.scenario.name}` +
+              (session.dealContext.backstory ? `\n- Backstory: ${session.dealContext.backstory}` : "");
+            return {
+              content: [{ type: "text" as const, text: summary }],
+              structuredContent: {
+                id: session.id,
+                url: session.url,
+                createdAt: session.createdAt,
+                dealContext: {
+                  opportunity: { ...session.dealContext.opportunity },
+                  contact: { ...session.dealContext.contact },
+                  voice: { ...session.dealContext.voice },
+                  scenario: { ...session.dealContext.scenario },
+                  ...(session.dealContext.backstory
+                    ? { backstory: session.dealContext.backstory }
+                    : {}),
+                },
               },
-            },
-          };
-        } catch (err) {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: handleError(err) }],
-          };
-        }
-      },
+            };
+          },
+        ),
     );
 
     // ─── Prompts ────────────────────────────────────────────────────────────
@@ -363,15 +417,15 @@ const handler = createMcpHandler(
 // when a request has no credentials. MCP clients use this to trigger
 // the OAuth flow automatically.
 //
-// We enforce the gate at HTTP level ONLY in Salesforce mode. In mock
-// mode the server is a no-auth demo and this wrapper is a pass-through.
+// In live mode (default) the gate is ALWAYS on: every request must carry
+// `Authorization: Bearer <supabase-jwt>`. In TC_MODE=mock the gate is a
+// pass-through so local dev / connector smoke tests work without auth.
 //
-// Token *validity* (not just presence) is still checked inside each
-// tool handler via getSfAuth(). That path returns `isError: true` to
-// Claude, which is what you want once the user has a token — only
-// the missing-token case needs protocol-level 401 to kick off OAuth.
-
-const USE_SALESFORCE = process.env.USE_SALESFORCE === "true";
+// Token *validity* (not just presence) is checked inside each tool handler
+// via getSfAuth() → getCallerIdentity() (JWKS validation). That path returns
+// `isError: true` to Claude, which is what you want once the user has a
+// token — only the missing-token case needs protocol-level 401 to kick off
+// OAuth.
 
 function publicBaseUrl(): string {
   if (process.env.MCP_PUBLIC_URL) return process.env.MCP_PUBLIC_URL;
@@ -388,7 +442,7 @@ function unauthenticatedResponse(): Response {
       jsonrpc: "2.0",
       error: {
         code: -32001,
-        message: "Unauthorized. Connect via Salesforce OAuth.",
+        message: "Unauthorized. Sign in via Tough Customer.",
       },
       id: null,
     }),
@@ -406,7 +460,7 @@ function withAuthGate(
   inner: (req: Request) => Promise<Response> | Response,
 ): (req: Request) => Promise<Response> {
   return async (req: Request) => {
-    if (USE_SALESFORCE) {
+    if (!isMockMode()) {
       const authz = req.headers.get("authorization") ?? req.headers.get("Authorization");
       if (!authz || !/^Bearer\s+.+/i.test(authz)) {
         return unauthenticatedResponse();

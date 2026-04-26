@@ -1,7 +1,8 @@
-import { isSalesforceMode } from "@/lib/sf-auth";
+import Link from "next/link";
+import { isMockMode } from "@/lib/sf-auth";
 
 export default function Home() {
-  const sf = isSalesforceMode();
+  const mock = isMockMode();
   return (
     <main style={{ maxWidth: 760, margin: "3rem auto", padding: "0 1rem", lineHeight: 1.6 }}>
       <h1>Tough Customer MCP</h1>
@@ -16,23 +17,27 @@ export default function Home() {
         style={{
           padding: "0.75rem 1rem",
           border: "1px solid",
-          borderColor: sf ? "#0a0" : "#b00",
+          borderColor: mock ? "#b00" : "#0a0",
           borderRadius: 6,
-          background: sf ? "rgba(0,170,0,.06)" : "rgba(187,0,0,.06)",
+          background: mock ? "rgba(187,0,0,.06)" : "rgba(0,170,0,.06)",
           margin: "1rem 0",
         }}
       >
-        <strong>Mode: {sf ? "Salesforce (production auth)" : "Mock (demo — no auth)"}</strong>
+        <strong>Mode: {mock ? "Mock (demo — no auth)" : "Live (Supabase auth)"}</strong>
         <br />
-        {sf ? (
+        {mock ? (
           <>
-            Every request must carry <code>Authorization: Bearer &lt;sf-token&gt;</code>. Identity
-            comes from Salesforce; SOQL runs with <code>WITH USER_MODE</code>.
+            Returns in-memory demo data to any caller. Do not connect real
+            customers. Set <code>TC_MODE=live</code> (or unset) to enable
+            production auth.
           </>
         ) : (
           <>
-            Returns in-memory demo data to any caller. Do not connect real customers.{" "}
-            Set <code>USE_SALESFORCE=true</code> to enable production auth.
+            Authorization Server: <strong>Supabase Auth</strong>. Claude carries
+            a Supabase-issued JWT, never a Salesforce token. Salesforce is
+            connected at <Link href="/connect">/connect</Link> (one-time per
+            user); the MCP server holds an encrypted refresh token and mints
+            short-lived SF access tokens per request.
           </>
         )}
       </div>
@@ -55,9 +60,12 @@ export default function Home() {
         <li><code>setup_sales_roleplay</code></li>
       </ul>
       <p>
-        Backend dispatch lives in <code>lib/tc-service.ts</code>. Salesforce implementation is in{" "}
-        <code>lib/tc-salesforce.ts</code>; the Apex REST classes you need to deploy are documented in{" "}
-        <code>APEX.md</code>.
+        Backend dispatch lives in <code>lib/tc-service.ts</code>. Salesforce
+        implementation is in <code>lib/tc-salesforce.ts</code> via
+        <code>lib/sf-graphql.ts</code> — no Apex deploy required. The custom
+        objects + fields the SF admin must create are documented in
+        <code>docs/SALESFORCE_OBJECTS.md</code>. Auth model: see
+        <code>userstories.md</code> §2.1 (Model B).
       </p>
     </main>
   );

@@ -10,8 +10,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mcp-ui/server": "^6.1.0",
     "@modelcontextprotocol/sdk": "^1.18.0",
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "^2.104.1",
+    "jose": "^6.2.2",
     "mcp-handler": "^1.0.1",
     "next": "^15.1.6",
     "react": "^19.0.0",

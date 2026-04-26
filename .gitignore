@@ -9,3 +9,12 @@ dist
 *.log
 .DS_Store
 next-env.d.ts
+
+# Claude Code agent state (worktrees, plans, transcripts)
+.claude/
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
+# Supabase CLI internal cache
+supabase/.temp/
