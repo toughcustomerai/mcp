@@ -37,11 +37,10 @@ export async function GET() {
     openid_configuration: `${authBaseUrl()}/auth/v1/.well-known/openid-configuration`,
     bearer_methods_supported: ["header"],
     resource_documentation: `${baseUrl()}/`,
-    scopes_supported: [
-      "roleplay:create",
-      "opportunity:read",
-      "voice:read",
-      "scenario:read",
-    ],
+    // Supabase OAuth Server (beta) supports only the standard OIDC scopes:
+    // openid, profile, email, phone. Custom scopes (e.g. roleplay:create)
+    // aren't yet supported by the AS. We enforce per-tool authorization in
+    // our handlers based on the authenticated user's identity instead.
+    scopes_supported: ["openid", "profile", "email"],
   });
 }

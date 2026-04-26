@@ -1,7 +1,13 @@
-// POST /auth/signin — kicks off Supabase Google OAuth.
+// /auth/signin — kicks off Supabase Google OAuth.
+//
+// Accepts both GET and POST so it can be linked from a redirect (e.g. when a
+// page wants to send an unauthenticated user to sign in) AND from a form
+// submit. The `next` query param (if present) survives the round-trip and
+// the user lands back where they started after Google + Supabase complete.
+//
 // Code Hero default: Google. Email/password is opt-in.
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseSSRClient } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -15,13 +21,16 @@ function appBaseUrl(): string {
   );
 }
 
-export async function POST() {
+async function handle(req: NextRequest): Promise<NextResponse> {
+  const next = req.nextUrl.searchParams.get("next") || "/connect";
+  // Build a callback URL that preserves `next` for /auth/callback to honor.
+  const callbackUrl = new URL("/auth/callback", appBaseUrl());
+  callbackUrl.searchParams.set("next", next);
+
   const supabase = await getSupabaseSSRClient();
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
-    options: {
-      redirectTo: `${appBaseUrl()}/auth/callback?next=/connect`,
-    },
+    options: { redirectTo: callbackUrl.toString() },
   });
   if (error || !data.url) {
     return NextResponse.redirect(
@@ -29,4 +38,12 @@ export async function POST() {
     );
   }
   return NextResponse.redirect(data.url);
+}
+
+export async function GET(req: NextRequest) {
+  return handle(req);
+}
+
+export async function POST(req: NextRequest) {
+  return handle(req);
 }
