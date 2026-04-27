@@ -292,31 +292,50 @@ const handler = createMcpHandler(
       {
         title: "Create Roleplay Session",
         description:
-          "Initialize a Tough Customer roleplay session. Call this after the user has chosen " +
-          "an opportunity, contact, scenario, and a voice preference. Returns the session URL and compiled deal context. " +
-          "Session is created on behalf of the current user.\n\n" +
-          "Voice selection: prefer `voiceGender` (\"male\" | \"female\" | \"any\") for most users — " +
-          "the LWC picks a concrete voice from the catalog at session start. " +
-          "Use `voiceId` only for power users who explicitly named a voice from `list_voices`. " +
-          "Provide at least one of the two; if both are given, `voiceId` wins.",
+          "Generate a launch URL for a Tough Customer roleplay on a Salesforce " +
+          "opportunity. The Learning LWC at the URL handles scenario / contact / " +
+          "voice selection itself once the user clicks Start, so only " +
+          "`opportunityId` is required.\n\n" +
+          "Optional inputs are for **enriching pre-call coaching** — pass them " +
+          "ONLY if the user explicitly told you what they wanted; otherwise " +
+          "skip them and let the LWC pick:\n" +
+          "  - `contactId` — validates the contact is on the opp; surfaces in dealContext\n" +
+          "  - `scenarioId` — validates and surfaces the scenario\n" +
+          "  - `voiceId` — power-user, exact voice name from list_voices\n" +
+          "  - `voiceGender` (\"male\" | \"female\" | \"any\") — surfaces a preference; LWC picks concrete\n" +
+          "  - `backstory` — free-text context for the AI buyer\n\n" +
+          "Default behavior: with just `opportunityId`, return the launch URL " +
+          "and Claude can offer a brief coaching summary based on the opp's " +
+          "name / stage / amount alone.",
         inputSchema: {
-          opportunityId: z.string().min(1).describe("Selected opportunity ID."),
-          contactId: z.string().min(1).describe("Selected contact ID (must belong to the opportunity)."),
+          opportunityId: z.string().min(1).describe("Selected opportunity ID. Required."),
+          contactId: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              "Optional contact ID. Pass only if the user picked a specific contact; otherwise skip and let the LWC pick.",
+            ),
+          scenarioId: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              "Optional scenario ID. Pass only if the user picked a specific scenario; otherwise skip.",
+            ),
           voiceId: z
             .string()
             .min(1)
             .optional()
             .describe(
-              "Specific voice ID from list_voices (power-user). Optional — usually prefer voiceGender.",
+              "Optional specific voice ID from list_voices (power-user). Skip in favor of voiceGender for most users.",
             ),
           voiceGender: z
             .enum(["male", "female", "any"])
             .optional()
             .describe(
-              "Preferred AI buyer voice gender. The LWC picks a concrete voice client-side. " +
-                "Default path for most users. Required if voiceId is not provided.",
+              "Optional voice-gender preference. Pass only if the user expressed one.",
             ),
-          scenarioId: z.string().min(1).describe("Selected scenario ID."),
           backstory: z
             .string()
             .max(4000)
@@ -330,56 +349,58 @@ const handler = createMcpHandler(
           openWorldHint: true,
         },
       },
-      async (input) => {
-        if (!input.voiceId && !input.voiceGender) {
-          return {
-            isError: true as const,
-            content: [
-              {
-                type: "text" as const,
-                text:
-                  "Error: provide either `voiceGender` (\"male\" | \"female\" | \"any\") or a specific `voiceId`.",
-              },
-            ],
-          };
-        }
-        return runMcpTool(
+      async (input) =>
+        runMcpTool(
           "create_roleplay_session",
           {
             opportunityId: input.opportunityId,
-            contactId: input.contactId,
+            hasContactId: !!input.contactId,
+            hasScenarioId: !!input.scenarioId,
             voiceId: input.voiceId,
             voiceGender: input.voiceGender,
-            scenarioId: input.scenarioId,
-            // backstory length only — never log content; redactor would strip
-            // anyway but the audit table doesn't need free text
             backstoryLength: input.backstory?.length ?? 0,
           },
           async (auth) => {
             const session = await createRoleplaySession(auth, input);
-            const voiceLine = session.dealContext.voice
-              ? `- Voice: ${session.dealContext.voice.name} (${session.dealContext.voice.gender}) — ${session.dealContext.voice.description}\n`
-              : session.dealContext.voicePreference
-                ? `- Voice: ${session.dealContext.voicePreference.gender} (picked at session start)\n`
-                : "";
-            const summary =
-              `Session created successfully!\n\n` +
-              `URL: ${session.url}\n\n` +
-              `Deal context:\n` +
-              `- Opportunity: ${session.dealContext.opportunity.name} (${session.dealContext.opportunity.stage}, $${session.dealContext.opportunity.amount.toLocaleString()})\n` +
-              `- Contact: ${session.dealContext.contact.name}, ${session.dealContext.contact.title}\n` +
-              voiceLine +
-              `- Scenario: ${session.dealContext.scenario.name}` +
-              (session.dealContext.backstory ? `\n- Backstory: ${session.dealContext.backstory}` : "");
+            const opp = session.dealContext.opportunity;
+            const lines: string[] = [
+              `Session ready! Click the URL to launch:`,
+              ``,
+              `URL: ${session.url}`,
+              ``,
+              `Deal: ${opp.name}${opp.accountName ? ` (${opp.accountName})` : ""} — ${opp.stage}, $${opp.amount.toLocaleString()}`,
+            ];
+            if (session.dealContext.contact) {
+              lines.push(
+                `Contact: ${session.dealContext.contact.name}, ${session.dealContext.contact.title}`,
+              );
+            }
+            if (session.dealContext.scenario) {
+              lines.push(`Scenario: ${session.dealContext.scenario.name}`);
+            }
+            if (session.dealContext.voice) {
+              lines.push(
+                `Voice: ${session.dealContext.voice.name} (${session.dealContext.voice.gender}) — ${session.dealContext.voice.description}`,
+              );
+            } else if (session.dealContext.voicePreference) {
+              lines.push(
+                `Voice: ${session.dealContext.voicePreference.gender} (picked at session start)`,
+              );
+            }
+            if (session.dealContext.backstory) {
+              lines.push(`Backstory: ${session.dealContext.backstory}`);
+            }
             return {
-              content: [{ type: "text" as const, text: summary }],
+              content: [{ type: "text" as const, text: lines.join("\n") }],
               structuredContent: {
                 id: session.id,
                 url: session.url,
                 createdAt: session.createdAt,
                 dealContext: {
                   opportunity: { ...session.dealContext.opportunity },
-                  contact: { ...session.dealContext.contact },
+                  ...(session.dealContext.contact
+                    ? { contact: { ...session.dealContext.contact } }
+                    : {}),
                   ...(session.dealContext.voice
                     ? { voice: { ...session.dealContext.voice } }
                     : {}),
@@ -390,7 +411,9 @@ const handler = createMcpHandler(
                         },
                       }
                     : {}),
-                  scenario: { ...session.dealContext.scenario },
+                  ...(session.dealContext.scenario
+                    ? { scenario: { ...session.dealContext.scenario } }
+                    : {}),
                   ...(session.dealContext.backstory
                     ? { backstory: session.dealContext.backstory }
                     : {}),
@@ -398,8 +421,7 @@ const handler = createMcpHandler(
               },
             };
           },
-        );
-      },
+        ),
     );
 
     // ─── Prompts ────────────────────────────────────────────────────────────
@@ -428,15 +450,20 @@ const handler = createMcpHandler(
               content: {
                 type: "text",
                 text:
-                  `You are the Tough Customer roleplay coordinator. Help the user configure and start a sales roleplay session.\n\n` +
+                  `You are the Tough Customer roleplay coordinator. Help the user pick an opportunity and launch a sales roleplay session.\n\n` +
                   focusLine +
                   `Identity: the MCP server authenticates the user via Salesforce OAuth. You never need to ask for an email — every tool call runs as the signed-in Salesforce user, and data is scoped by Salesforce sharing rules + FLS.\n\n` +
-                  `Follow this flow exactly — do not skip steps:\n\n` +
+                  `Default flow — fast path, minimal questions:\n\n` +
                   `1. Call \`list_opportunities\` and present the list. Ask the user which deal they want to practice.\n` +
-                  `2. Once they pick one, call \`get_opportunity_contacts\` with that opportunityId. Present the contacts and ask who they want to roleplay against.\n` +
-                  `3. Call \`list_scenarios\` and let the user pick one (suggest a sensible default based on the deal stage). For the voice, ask whether they'd like a male, female, or any voice — pass that as \`voiceGender\` when creating the session. Only call \`list_voices\` and pass a specific \`voiceId\` if the user explicitly asks to choose a specific voice by name.\n` +
-                  `4. Ask if they want to add an optional backstory / extra context.\n` +
-                  `5. Call \`create_roleplay_session\` with all selected IDs. Share the resulting session URL and give a short pre-call coaching summary.\n\n` +
+                  `2. Once they pick one, call \`create_roleplay_session\` with just the \`opportunityId\`. Share the resulting launch URL.\n` +
+                  `3. Give a short pre-call coaching summary based on the opportunity name, stage, and account.\n\n` +
+                  `Optional details — only ask about these if the user **explicitly** wants to customize:\n\n` +
+                  `- Specific contact: call \`get_opportunity_contacts\`, let them pick, pass \`contactId\`.\n` +
+                  `- Specific scenario: call \`list_scenarios\`, let them pick, pass \`scenarioId\`.\n` +
+                  `- Voice gender preference: pass \`voiceGender\` ("male" | "female" | "any").\n` +
+                  `- Specific voice by name: call \`list_voices\`, pass \`voiceId\` (power-user).\n` +
+                  `- Backstory: pass \`backstory\` with their free-text context.\n\n` +
+                  `Don't volunteer the optional questions — the Learning LWC handles contact / scenario / voice picking client-side at session start. Only enrich \`create_roleplay_session\` when the user themselves brings up one of those choices (e.g. "I want to roleplay with the CTO" → fetch contacts; "Try a female voice" → pass voiceGender).\n\n` +
                   `Rules:\n` +
                   `- Always show human-readable names, not IDs.\n` +
                   `- If a tool returns an authorization error, tell the user their Salesforce session may have expired and to reconnect the connector.\n` +

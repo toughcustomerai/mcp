@@ -270,15 +270,14 @@ Acceptance:
 
 Status: ✅
 
-### 3.5 Pick voice and scenario
-**As a** salesperson, **I want** to pick a scenario and a voice preference quickly, **so that** I'm not slogging through a 31-voice menu every session.
+### 3.5 Pick voice and scenario (only if I ask)
+**As a** salesperson, **I want** Claude to skip the voice / scenario / contact picker by default and let me launch with one click, **so that** the fast path is one decision (which deal), not five.
 
 Acceptance:
-- The default flow is: pick a scenario, then pick a *voice gender* (male / female / any). Claude calls `create_roleplay_session` with `voiceGender` and the LWC picks a concrete voice from `lib/voices.ts` at session start.
-- Power-user override: a salesperson who knows the catalog can ask for a specific voice by name; Claude calls `list_voices` and passes `voiceId` instead.
-- `list_voices` still returns name, gender, description for each voice (catalog inspection / LWC picker source of truth).
-- `list_scenarios` returns name and description.
-- Claude suggests a sensible default scenario based on the deal's stage (e.g. Negotiation → Pricing Negotiation).
+- **Default flow**: Claude calls `create_roleplay_session` with **only** `opportunityId` after I pick a deal. The Learning LWC handles voice / scenario / contact selection client-side. Claude does NOT volunteer the voice / scenario / contact questions.
+- **Opt-in details**: if I explicitly say "use the CTO" / "try a female voice" / "do the renewal pushback scenario", Claude passes the matching optional field (`contactId` / `voiceGender` / `scenarioId`) on the same `create_roleplay_session` call. Claude calls `get_opportunity_contacts` / `list_voices` / `list_scenarios` only when I've signalled I want one of those choices.
+- All four detail inputs (`contactId`, `scenarioId`, `voiceId`, `voiceGender`) are independently optional; passing zero of them is the documented happy path.
+- `list_voices` and `list_scenarios` still exist for power users who want to browse the catalog.
 
 Status: ✅
 
@@ -296,9 +295,9 @@ Status: ✅
 **As a** salesperson, **I want** a shareable session URL I can click to start the roleplay, **so that** I can go straight from chat to practice.
 
 Acceptance:
-- `create_roleplay_session` returns a Lightning launch URL `/lightning/n/Learning?c__opp=<opportunityId>`. The LWC resolves the rest (scenario, contact, voice, the user's most recent `ScenarioAssignment__c` for that opp) at session-start.
+- `create_roleplay_session` returns a Lightning launch URL `/lightning/n/Learning?c__opp=<opportunityId>`. The LWC resolves the rest (scenario, contact, voice, ScenarioAssignment__c create) at session-start.
 - Claude renders the URL as a clickable link in its response.
-- The session response includes the full deal context so Claude can prep me before I click. When only a gender preference was given, `dealContext.voicePreference` is returned in place of `dealContext.voice`.
+- `dealContext.opportunity` is always returned. `dealContext.contact` / `dealContext.scenario` / `dealContext.voice` / `dealContext.voicePreference` / `dealContext.backstory` are present only if the matching optional input was passed to `create_roleplay_session`.
 
 Status: ✅
 

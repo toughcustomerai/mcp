@@ -264,25 +264,83 @@ export async function createRoleplaySessionSF(
   auth: SfAuth,
   input: CreateSessionInput,
 ): Promise<RoleplaySession> {
-  // 1. Resolve all the lookups for deal-context the caller picked.
-  //    Voice is hardcoded; the rest come from SF.
-  if (!input.voiceId && !input.voiceGender) {
-    throw new Error("Either voiceId or voiceGender must be provided");
-  }
+  // Voice is resolved against the local hardcoded catalog — fast, no SF call.
   let voice: Voice | undefined;
   let voicePreference:
     | { gender: VoiceGender; description: string }
     | undefined;
   if (input.voiceId) {
-    const found = findVoice(input.voiceId);
-    if (!found) throw new TCNotFoundError("Voice", input.voiceId);
-    voice = found;
-  } else {
+    voice = findVoice(input.voiceId);
+    if (!voice) throw new TCNotFoundError("Voice", input.voiceId);
+  } else if (input.voiceGender) {
     voicePreference = {
-      gender: input.voiceGender!,
+      gender: input.voiceGender,
       description: "AI-picked voice (gender preference)",
     };
   }
+
+  // Build the GraphQL lookups conditionally — only for fields the caller
+  // actually provided. Opportunity is always fetched (it's how we get
+  // accountName / stage / amount for Claude's coaching).
+  const wantContact = !!input.contactId;
+  const wantScenario = !!input.scenarioId;
+
+  const querySections: string[] = [];
+  const queryArgs: string[] = ["$oppId: ID!"];
+  const queryVars: Record<string, string> = { oppId: input.opportunityId };
+
+  querySections.push(`
+    Opportunity(where: { Id: { eq: $oppId } }, first: 1) {
+      edges {
+        node {
+          Id
+          Name { value }
+          StageName { value }
+          Amount { value }
+          Account { Name { value } }
+        }
+      }
+    }
+  `);
+  if (wantContact) {
+    queryArgs.push("$contactId: ID!");
+    queryVars.contactId = input.contactId!;
+    querySections.push(`
+      OpportunityContactRole(
+        where: {
+          and: [
+            { OpportunityId: { eq: $oppId } }
+            { ContactId: { eq: $contactId } }
+          ]
+        }
+        first: 1
+      ) {
+        edges {
+          node { Contact { Id Name { value } Title { value } } }
+        }
+      }
+    `);
+  }
+  if (wantScenario) {
+    queryArgs.push("$scenarioId: ID!");
+    queryVars.scenarioId = input.scenarioId!;
+    querySections.push(`
+      Scenario__c(where: { Id: { eq: $scenarioId } }, first: 1) {
+        edges {
+          node {
+            Id
+            Name { value }
+            Description__c { value }
+            Type__c { value }
+          }
+        }
+      }
+    `);
+  }
+
+  const query = `query SessionLookups(${queryArgs.join(", ")}) {
+    uiapi { query { ${querySections.join("\n")} } }
+  }`;
 
   const lookups = await sfGraphQL<{
     uiapi: {
@@ -294,86 +352,37 @@ export async function createRoleplaySessionSF(
           Amount: GqlNumber;
           Account: { Name: GqlString } | null;
         }>;
-        OpportunityContactRole: GqlNode<{
+        OpportunityContactRole?: GqlNode<{
           Contact: { Id: string; Name: GqlString; Title: GqlString } | null;
         }>;
-        Scenario__c: GqlNode<ScenarioNode>;
+        Scenario__c?: GqlNode<ScenarioNode>;
       };
     };
-  }>(
-    auth,
-    /* GraphQL */ `
-      query SessionLookups(
-        $oppId: ID!
-        $contactId: ID!
-        $scenarioId: ID!
-      ) {
-        uiapi {
-          query {
-            Opportunity(where: { Id: { eq: $oppId } }, first: 1) {
-              edges {
-                node {
-                  Id
-                  Name { value }
-                  StageName { value }
-                  Amount { value }
-                  Account { Name { value } }
-                }
-              }
-            }
-            OpportunityContactRole(
-              where: {
-                and: [
-                  { OpportunityId: { eq: $oppId } }
-                  { ContactId: { eq: $contactId } }
-                ]
-              }
-              first: 1
-            ) {
-              edges {
-                node {
-                  Contact { Id Name { value } Title { value } }
-                }
-              }
-            }
-            Scenario__c(where: { Id: { eq: $scenarioId } }, first: 1) {
-              edges {
-                node {
-                  Id
-                  Name { value }
-                  Description__c { value }
-                  Type__c { value }
-                }
-              }
-            }
-          }
-        }
-      }
-    `,
-    {
-      oppId: input.opportunityId,
-      contactId: input.contactId,
-      scenarioId: input.scenarioId,
-    },
-  );
+  }>(auth, query, queryVars);
 
   const oppNode = lookups.uiapi.query.Opportunity.edges[0]?.node;
   if (!oppNode) throw new TCNotFoundError("Opportunity", input.opportunityId);
 
-  const ocrContact =
-    lookups.uiapi.query.OpportunityContactRole.edges[0]?.node.Contact;
-  if (!ocrContact) {
-    throw new TCNotFoundError(
-      `Contact for opportunity ${input.opportunityId}`,
-      input.contactId,
-    );
+  let ocrContact: { Id: string; Name: GqlString; Title: GqlString } | undefined;
+  if (wantContact) {
+    ocrContact =
+      lookups.uiapi.query.OpportunityContactRole?.edges[0]?.node.Contact ??
+      undefined;
+    if (!ocrContact) {
+      throw new TCNotFoundError(
+        `Contact for opportunity ${input.opportunityId}`,
+        input.contactId!,
+      );
+    }
   }
 
-  const scenarioNode = lookups.uiapi.query.Scenario__c.edges[0]?.node;
-  if (!scenarioNode) throw new TCNotFoundError("Scenario", input.scenarioId);
+  let scenarioNode: ScenarioNode | undefined;
+  if (wantScenario) {
+    scenarioNode = lookups.uiapi.query.Scenario__c?.edges[0]?.node;
+    if (!scenarioNode) throw new TCNotFoundError("Scenario", input.scenarioId!);
+  }
 
-  // No SF mutation. Generate an opaque session id for tracking on the
-  // MCP side; the Learning LWC creates the real ScenarioAssignment__c
+  // No SF mutation — the Learning LWC creates the ScenarioAssignment__c
   // when the user clicks Start.
   const sessionId = "sess_" + randomBytes(8).toString("hex");
   const launchUrl = buildLaunchUrl({
@@ -393,21 +402,29 @@ export async function createRoleplaySessionSF(
         stage: val(oppNode.StageName) ?? "",
         amount: val(oppNode.Amount) ?? 0,
       },
-      contact: {
-        id: ocrContact.Id,
-        opportunityId: input.opportunityId,
-        name: val(ocrContact.Name) ?? "",
-        title: val(ocrContact.Title) ?? "",
-      },
+      ...(ocrContact
+        ? {
+            contact: {
+              id: ocrContact.Id,
+              opportunityId: input.opportunityId,
+              name: val(ocrContact.Name) ?? "",
+              title: val(ocrContact.Title) ?? "",
+            },
+          }
+        : {}),
       ...(voice ? { voice } : {}),
       ...(voicePreference ? { voicePreference } : {}),
-      scenario: {
-        id: scenarioNode.Id,
-        name: val(scenarioNode.Name) ?? "",
-        description:
-          val(scenarioNode.Description__c) ??
-          `Type: ${val(scenarioNode.Type__c) ?? "Case"}`,
-      },
+      ...(scenarioNode
+        ? {
+            scenario: {
+              id: scenarioNode.Id,
+              name: val(scenarioNode.Name) ?? "",
+              description:
+                val(scenarioNode.Description__c) ??
+                `Type: ${val(scenarioNode.Type__c) ?? "Case"}`,
+            },
+          }
+        : {}),
       ...(input.backstory ? { backstory: input.backstory } : {}),
     },
   };
