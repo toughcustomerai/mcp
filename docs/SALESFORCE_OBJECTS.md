@@ -166,7 +166,7 @@ There is no `Roleplay_Session__c`. When code talks about a "session" it means ei
 - an ephemeral OpenAI/Gemini realtime session in the LWC (no SF record), or
 - a `ScenarioAssignment__c` + the resulting `toughcustomer__Transcript__c` record from the managed package, joined by `ScenarioAssignment__c.Transcript__c`.
 
-If your MCP tool currently calls itself `create_roleplay_session`, what it should actually create is a `ScenarioAssignment__c` row.
+**The MCP `create_roleplay_session` tool does NOT create a `ScenarioAssignment__c`.** It validates the picked context (opp / contact / scenario / voice) and returns a Lightning launch URL — the **Learning LWC** is responsible for creating the assignment when the user clicks Start. We tried the GraphQL mutation `ScenarioAssignment__cCreate(input: ScenarioAssignment__c_CreateInput!)` and SF rejected it as an unknown input type; rather than fight the schema (which would require either REST `/sobjects` or Apex), we let the LWC own the write.
 
 ---
 

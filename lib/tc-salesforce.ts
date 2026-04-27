@@ -231,39 +231,19 @@ export async function listScenariosSF(auth: SfAuth): Promise<Scenario[]> {
   }));
 }
 
-// ─── create_roleplay_session → ScenarioAssignment__c ────────────────────
+// ─── create_roleplay_session → launch URL ───────────────────────────────
 //
-// Creates a ScenarioAssignment__c owned by the caller. Per the schema doc,
-// "session" in our MCP terms means the assignment + its eventual Transcript;
-// there is no Roleplay_Session__c object.
+// VALIDATES the picked context (opportunity, contact-on-opp, scenario,
+// voice or voiceGender) and returns a Lightning launch URL. Does NOT
+// write a ScenarioAssignment__c — the Learning LWC creates the assignment
+// itself when the user clicks Start. The assignment-create mutation we
+// previously did was rejected by SF GraphQL anyway
+// (`ScenarioAssignment__c_CreateInput` type isn't on the live schema).
 //
-// opportunityId / contactId / voiceId / backstory are NOT persisted on the
-// assignment (the schema has no fields for them). They flow through to
-// Claude as deal-context for pre-call coaching, and into the launch URL
-// query string so the LWC can pick them up client-side.
+// dealContext fields still flow back to Claude so it can do pre-call
+// coaching with the picked voice / contact / scenario.
 
-interface AssignmentMutationResult {
-  Record: {
-    Id: string;
-    Name: GqlString;
-    Scenario__c: GqlString;
-    Assigned_Date__c: GqlString;
-    Due_Date__c: GqlString;
-    CreatedDate: GqlString;
-  };
-  errors?: Array<{ message: string }>;
-}
-
-const SCENARIO_ASSIGNMENT_DUE_DAYS = 7;
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-function plusDaysIso(days: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
+import { randomBytes } from "node:crypto";
 
 function buildLaunchUrl(args: {
   instanceUrl: string;
@@ -392,58 +372,19 @@ export async function createRoleplaySessionSF(
   const scenarioNode = lookups.uiapi.query.Scenario__c.edges[0]?.node;
   if (!scenarioNode) throw new TCNotFoundError("Scenario", input.scenarioId);
 
-  // 2. Insert the ScenarioAssignment__c. Owner defaults to the caller; we
-  //    don't override. Single-mutation request → atomic.
-  const created = await sfGraphQL<{
-    uiapi: { ScenarioAssignment__cCreate: AssignmentMutationResult };
-  }>(
-    auth,
-    /* GraphQL */ `
-      mutation CreateAssignment($input: ScenarioAssignment__c_CreateInput!) {
-        uiapi {
-          ScenarioAssignment__cCreate(input: $input) {
-            Record {
-              Id
-              Name { value }
-              Scenario__c { value }
-              Assigned_Date__c { value }
-              Due_Date__c { value }
-              CreatedDate { value }
-            }
-            errors { message }
-          }
-        }
-      }
-    `,
-    {
-      input: {
-        ScenarioAssignment__c: {
-          Scenario__c: input.scenarioId,
-          Assigned_Date__c: todayIso(),
-          Due_Date__c: plusDaysIso(SCENARIO_ASSIGNMENT_DUE_DAYS),
-          Notification_Sent__c: false,
-        },
-      },
-    },
-  );
-
-  const mutResult = created.uiapi.ScenarioAssignment__cCreate;
-  if (mutResult.errors && mutResult.errors.length > 0) {
-    throw new Error(
-      `Salesforce assignment create failed: ${mutResult.errors.map((e) => e.message).join("; ")}`,
-    );
-  }
-
-  const rec = mutResult.Record;
+  // No SF mutation. Generate an opaque session id for tracking on the
+  // MCP side; the Learning LWC creates the real ScenarioAssignment__c
+  // when the user clicks Start.
+  const sessionId = "sess_" + randomBytes(8).toString("hex");
   const launchUrl = buildLaunchUrl({
     instanceUrl: auth.instanceUrl,
     opportunityId: input.opportunityId,
   });
 
   return {
-    id: rec.Id,
+    id: sessionId,
     url: launchUrl,
-    createdAt: val(rec.CreatedDate) ?? new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     dealContext: {
       opportunity: {
         id: oppNode.Id,
