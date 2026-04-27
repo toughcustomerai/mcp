@@ -130,7 +130,6 @@ export async function getOpportunityContactsSF(
             }
             OpportunityContactRole(
               where: { OpportunityId: { eq: $oppId } }
-              orderBy: [{ IsPrimary: { order: DESC } }]
               first: 200
             ) {
               edges {
@@ -161,6 +160,14 @@ export async function getOpportunityContactsSF(
   return data.uiapi.query.OpportunityContactRole.edges
     .map(({ node }) => node)
     .filter((ocr) => ocr.Contact != null)
+    // Sort primary contact first (orderBy on OpportunityContactRole isn't
+    // accepted by SF GraphQL — at least not with the {Field:{order}} shape
+    // that works on Opportunity. Sorting JS-side is fine for ≤200 rows.)
+    .sort((a, b) => {
+      const ap = a.IsPrimary?.value ? 1 : 0;
+      const bp = b.IsPrimary?.value ? 1 : 0;
+      return bp - ap;
+    })
     .map((ocr) => ({
       id: ocr.Contact!.Id,
       opportunityId,
