@@ -15,9 +15,6 @@ export const dynamic = "force-dynamic";
 
 interface LinkRow {
   external_email: string;
-  external_org_id: string;
-  external_user_id: string;
-  instance_url: string;
   created_at: string;
 }
 
@@ -25,9 +22,7 @@ async function loadLinkSummary(supabaseUserId: string): Promise<LinkRow | null> 
   const svc = getSupabaseServiceClient();
   const { data, error } = await svc
     .from("identity_links")
-    .select(
-      "external_email, external_org_id, external_user_id, instance_url, created_at",
-    )
+    .select("external_email, created_at")
     .eq("supabase_user_id", supabaseUserId)
     .eq("provider", "salesforce")
     .is("revoked_at", null)
@@ -49,10 +44,10 @@ export default async function ConnectPage({
     <main style={pageStyle}>
       <h1>Connect Salesforce</h1>
       <p style={lead}>
-        Tough Customer needs a one-time link to your Salesforce org. After
-        linking, Claude can configure roleplays using your Salesforce data — and
-        Salesforce&apos;s sharing rules + field-level security stay in force the
-        whole time.
+        Tough Customer needs a one-time link to your Salesforce account. After
+        linking, your AI assistant can run roleplays using your real
+        opportunities and contacts — Salesforce&apos;s sharing rules and
+        field-level security stay in force the whole time.
       </p>
 
       {params.status === "linked" && (
@@ -63,7 +58,8 @@ export default async function ConnectPage({
       )}
       {params.status === "error" && (
         <Banner kind="err">
-          Linking failed{params.reason ? `: ${params.reason}` : ""}. Try again.
+          Couldn&apos;t link your Salesforce account. Try again — if it keeps
+          failing, contact your administrator.
         </Banner>
       )}
 
@@ -71,9 +67,8 @@ export default async function ConnectPage({
 
       <hr style={{ margin: "2rem 0", border: 0, borderTop: "1px solid #ddd" }} />
       <p style={{ fontSize: 13, color: "#666" }}>
-        Your Salesforce refresh token is encrypted at rest and never leaves the
-        server. The MCP server mints short-lived access tokens per request and
-        discards them. <Link href="/">Back to MCP server</Link>.
+        Your Salesforce credentials are encrypted at rest and never sent to the
+        AI client. <Link href="/">Back to home</Link>.
       </p>
     </main>
   );
@@ -114,11 +109,11 @@ async function SignedIn({ supabaseUserId }: { supabaseUserId: string }) {
         <strong>Connected as</strong> {link.external_email}
         <br />
         <small style={{ color: "#666" }}>
-          SF user {link.external_user_id} · org {link.external_org_id}
-          <br />
-          instance {link.instance_url}
-          <br />
-          linked {new Date(link.created_at).toLocaleString()}
+          linked {new Date(link.created_at).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })}
         </small>
       </p>
       <form action="/connect/disconnect" method="post">
