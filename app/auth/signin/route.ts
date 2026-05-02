@@ -44,70 +44,136 @@ function htmlResponse(body: string, status = 200): NextResponse {
 }
 
 const PAGE_STYLE = `
-  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
-  h1 { font-size: 1.4rem; margin-bottom: .25rem; }
-  p { color: #444; }
-  form { display: flex; flex-direction: column; gap: .6rem; margin-top: 1rem; }
-  input { padding: .55rem .75rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px; }
-  button { padding: .6rem 1rem; border: 1px solid #06f; background: #06f; color: white; border-radius: 6px; cursor: pointer; font-size: 1rem; }
-  .alt { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #eee; }
-  .muted { color: #666; font-size: .85rem; }
-  .error { color: #b00; }
-  fieldset { border: 1px solid #ddd; border-radius: 6px; padding: .75rem 1rem; }
-  legend { padding: 0 .5rem; font-size: .9rem; color: #555; }
+  :root { color-scheme: light; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #f5f6f8; color: #111;
+  }
+  .shell { width: 100%; max-width: 400px; padding: 2.5rem 1rem; }
+  .brand { text-align: center; margin-bottom: 1.75rem; }
+  .brand h1 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  .brand p  { font-size: .9rem; color: #666; margin: 0; }
+  .card {
+    background: white; border: 1px solid #e3e6ea; border-radius: 10px;
+    padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .card h2 { font-size: 1rem; margin: 0 0 .9rem; }
+  form { display: flex; flex-direction: column; gap: .5rem; }
+  label { font-size: .8rem; color: #444; margin-top: .25rem; }
+  input {
+    padding: .6rem .75rem; font-size: 1rem; border: 1px solid #cbd0d6;
+    border-radius: 6px; background: white;
+  }
+  input:focus { outline: 2px solid #2563eb33; border-color: #2563eb; }
+  .btn {
+    padding: .65rem 1rem; border-radius: 6px; cursor: pointer;
+    font-size: .95rem; font-weight: 500;
+    border: 1px solid #2563eb; background: #2563eb; color: white;
+  }
+  .btn:hover { background: #1e4fc7; }
+  .btn-secondary {
+    background: white; color: #1f2937; border-color: #cbd0d6;
+  }
+  .btn-secondary:hover { background: #f5f6f8; }
+  .divider {
+    text-align: center; color: #888; font-size: .8rem;
+    margin: 1.25rem 0 .75rem; position: relative;
+  }
+  .divider::before, .divider::after {
+    content: ""; position: absolute; top: 50%; width: 38%;
+    height: 1px; background: #e3e6ea;
+  }
+  .divider::before { left: 0; }
+  .divider::after { right: 0; }
+  .footer-note {
+    text-align: center; font-size: .8rem; color: #6b7280;
+    margin-top: 1.25rem;
+  }
+  .error {
+    background: #fff1f2; border: 1px solid #fecaca; color: #991b1b;
+    border-radius: 6px; padding: .6rem .8rem; margin-bottom: 1rem;
+    font-size: .9rem;
+  }
+  .lock { color: #6b7280; }
 `;
+
+function brandHeader(): string {
+  return `<div class="brand">
+    <h1>Tough Customer</h1>
+    <p>Sign in to continue</p>
+  </div>`;
+}
 
 function signinForm(next: string, message?: string): string {
   return `<!doctype html>
-<html><head><meta charset="utf-8"><title>Sign in — Tough Customer</title>
-<style>${PAGE_STYLE}</style></head>
+<html><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — Tough Customer</title>
+  <style>${PAGE_STYLE}</style>
+</head>
 <body>
-  <h1>Sign in to Tough Customer</h1>
-  ${message ? `<p class="error">${escapeHtml(message)}</p>` : ""}
+  <div class="shell">
+    ${brandHeader()}
+    <div class="card">
+      ${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}
 
-  <fieldset>
-    <legend>Email + password</legend>
-    <form method="POST" action="/auth/signin">
-      <input type="hidden" name="next" value="${escapeHtml(next)}">
-      <input type="email" name="email" required placeholder="you@example.com" autofocus>
-      <input type="password" name="password" required placeholder="password" minlength="6">
-      <button type="submit">Sign in</button>
-    </form>
-  </fieldset>
+      <form method="POST" action="/auth/signin">
+        <input type="hidden" name="next" value="${escapeHtml(next)}">
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email" required autocomplete="email" autofocus>
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" required minlength="6" autocomplete="current-password">
+        <button type="submit" class="btn" style="margin-top:.75rem">Sign in</button>
+      </form>
 
-  <fieldset class="alt">
-    <legend>Magic link</legend>
-    <form method="POST" action="/auth/signin">
-      <input type="hidden" name="next" value="${escapeHtml(next)}">
-      <input type="email" name="email" required placeholder="you@example.com">
-      <button type="submit" name="mode" value="magic" style="background:white;color:#06f">
-        Send sign-in link
-      </button>
-    </form>
-    <p class="muted">Click the link from the same browser you submitted from.</p>
-  </fieldset>
+      <div class="divider">or</div>
 
-  <fieldset class="alt">
-    <legend>Google</legend>
-    <form method="POST" action="/auth/signin">
-      <input type="hidden" name="next" value="${escapeHtml(next)}">
-      <button type="submit" name="mode" value="google" style="background:white;color:#333;border-color:#999">
-        Sign in with Google
-      </button>
-    </form>
-    <p class="muted">Requires the Google provider to be enabled in Supabase Auth settings.</p>
-  </fieldset>
+      <form method="POST" action="/auth/signin" style="margin-bottom:.5rem">
+        <input type="hidden" name="next" value="${escapeHtml(next)}">
+        <input type="email" name="email" required autocomplete="email" placeholder="Email a one-time link to…">
+        <button type="submit" name="mode" value="magic" class="btn btn-secondary">
+          Email me a sign-in link
+        </button>
+      </form>
+
+      <form method="POST" action="/auth/signin">
+        <input type="hidden" name="next" value="${escapeHtml(next)}">
+        <button type="submit" name="mode" value="google" class="btn btn-secondary">
+          Continue with Google
+        </button>
+      </form>
+    </div>
+    <p class="footer-note">
+      <span class="lock">🔒</span> Your credentials are transmitted over TLS and never stored on this server.
+    </p>
+  </div>
 </body></html>`;
 }
 
 function magicLinkSentPage(email: string): string {
   return `<!doctype html>
-<html><head><meta charset="utf-8"><title>Check your email — Tough Customer</title>
-<style>${PAGE_STYLE}</style></head>
+<html><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Check your email — Tough Customer</title>
+  <style>${PAGE_STYLE}</style>
+</head>
 <body>
-  <h1>Check your email</h1>
-  <p>We sent a sign-in link to <strong>${escapeHtml(email)}</strong>.</p>
-  <p class="muted">Click the link from the same browser you used to submit this form. The link is single-use.</p>
+  <div class="shell">
+    ${brandHeader()}
+    <div class="card" style="text-align:center">
+      <h2>Check your email</h2>
+      <p style="color:#444;margin:.25rem 0 0">
+        We sent a sign-in link to <strong>${escapeHtml(email)}</strong>.
+      </p>
+      <p style="color:#6b7280;font-size:.85rem;margin:1rem 0 0">
+        The link is valid for a few minutes and can only be used once.
+        You can close this tab — clicking the link will bring you back.
+      </p>
+    </div>
+  </div>
 </body></html>`;
 }
 
@@ -140,7 +206,12 @@ export async function POST(req: NextRequest) {
   ) {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
-      return htmlResponse(signinForm(next, `Sign-in failed: ${error.message}`), 400);
+      // Generic message — never echo provider error text (could leak account
+      // existence info or internal product names).
+      return htmlResponse(
+        signinForm(next, "Email or password didn't match. Please try again."),
+        400,
+      );
     }
     // Session cookies are now set. 303 forces GET on the next hop.
     return NextResponse.redirect(new URL(next, appBaseUrl()), 303);
@@ -156,7 +227,10 @@ export async function POST(req: NextRequest) {
       options: { emailRedirectTo: callbackUrl.toString() },
     });
     if (error) {
-      return htmlResponse(signinForm(next, `Magic-link send failed: ${error.message}`), 400);
+      return htmlResponse(
+        signinForm(next, "We couldn't send the sign-in link. Try again in a moment."),
+        400,
+      );
     }
     return htmlResponse(magicLinkSentPage(email));
   }
@@ -168,7 +242,7 @@ export async function POST(req: NextRequest) {
   });
   if (error || !data.url) {
     return htmlResponse(
-      signinForm(next, `Google sign-in failed: ${error?.message ?? "unknown error"}`),
+      signinForm(next, "Google sign-in is currently unavailable. Try email instead."),
       400,
     );
   }
